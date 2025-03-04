@@ -276,6 +276,7 @@ for piece_name in all_pieces:
 # pcb is a dictionary from piece name to every possible boundary of that piece on (0, 0)
 # pcc is a dictionary from piece name to every possible corner of that piece on (0, 0)
 # To get all possible placements of a piece on a grid, shift the coords by the grid spot value
+
 pcco = {}
 pcb = {}
 pcc = {}
