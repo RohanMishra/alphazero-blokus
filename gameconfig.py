@@ -237,7 +237,7 @@ corners = {}
 for piece in all_pieces:
     # take each set of coords, add +1, -1, +14, -14 then concat results make a set of it, creating boundary for piece
     t = np.unique(
-        np.concat(
+        np.concatenate(
             (
                 all_pieces[piece] + (1, 0),
                 all_pieces[piece] - (1, 0),
@@ -249,7 +249,7 @@ for piece in all_pieces:
     )
     boundaries[piece] = remove_duplicate_pos(t, all_pieces[piece])
     c = np.unique(
-        np.concat(
+        np.concatenate(
             (
                 all_pieces[piece] + (1, 1),
                 all_pieces[piece] + (-1, -1),
@@ -259,7 +259,7 @@ for piece in all_pieces:
         ),
         axis=0,
     )
-    corners[piece] = remove_duplicate_pos(c, np.concat((boundaries[piece], all_pieces[piece])))
+    corners[piece] = remove_duplicate_pos(c, np.concatenate((boundaries[piece], all_pieces[piece])))
     # corners[piece] = np.delete(c, np.isin(c, np.concat((boundaries[piece], all_pieces[piece]))), axis=0)
 
 piece_canonical_coord_options = {}
@@ -284,3 +284,27 @@ for piece_name in pieces:
     pcco[piece_name] = np.vstack([piece_canonical_coord_options[piece] for piece in pieces[piece_name]])
     pcb[piece_name] = np.vstack([piece_canonical_boundaries[piece] for piece in pieces[piece_name]])
     pcc[piece_name] = np.vstack([piece_canonical_corners[piece] for piece in pieces[piece_name]])
+
+piece_bdd_corner_pos_dict = {}
+for r in range(14):
+    for c in range(14):
+        position = (r, c)
+        piece_bdd_corner_pos_dict[position] = {}
+        for piece in pcco.keys():
+            piece_bdd_corner_pos_dict[position][piece] = []
+            placement_options = pcco[piece] + position
+            # Remove any options out of bounds
+            mask = np.any((placement_options < 0) | (placement_options >= 14), axis=(1, 2))
+            placement_options = placement_options[~mask]
+
+            boundary_options = pcb[piece] + position
+            boundary_options = boundary_options[~mask]
+            corner_options = pcc[piece] + position
+            corner_options = corner_options[~mask]
+
+            for option, boundary, corner in zip(placement_options, boundary_options, corner_options):
+                b_mask = np.any((boundary < 0) | (boundary >= 14), axis=1)
+                boundary = tuple(boundary[~b_mask].T)
+                c_mask = np.any((corner < 0) | (corner >= 14), axis=1)
+                corner = tuple(corner[~c_mask].T)
+                piece_bdd_corner_pos_dict[position][piece].append((option, boundary, corner))
