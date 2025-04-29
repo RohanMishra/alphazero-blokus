@@ -1,128 +1,132 @@
 import numpy as np
-from gameconfig import piece_bdd_corner_pos_dict as pdcpd
-from gameconfig import pcco, pcc, pcb
+
+from gameconfig import (
+    board_size,
+    action_size,
+    piecenames,
+    id_to_boundary,
+    pos_piece_to_id,
+    id_to_piece_coords,
+    reverse_id_perspective,
+    id_to_coords,
+    p1_start,
+    p2_start,
+)
 
 
 class BlokusGame:
-    BOARD_SIZE = 14
+    BOARD_SIZE = board_size
 
     def __init__(self):
-        self.board = np.zeros((14, 14))
+        self.board = np.zeros((self.BOARD_SIZE, self.BOARD_SIZE))
         self.player = 1
-        self.first_move = {1: True, 2: True}
+        self.flipped = False
+        self.first_move = {1: True, -1: True}
         self.starting_positions = {
-            1: (4, 4),
-            2: (self.BOARD_SIZE - 5, self.BOARD_SIZE - 5),
+            1: p1_start,
+            -1: p2_start,
         }
-        # self.corner_positions = {1: [(4, 4)], 2: [(self.BOARD_SIZE - 5, self.BOARD_SIZE - 5)]}
         self.available_pieces = {
-            1: set(pcco.keys()),
-            2: set(pcco.keys()),
+            1: piecenames.copy(),
+            -1: piecenames.copy(),
         }
-        self.move_history = []
+        self.passed = {1: False, -1: False}
+        self.action_size = action_size
 
-    def get_legal_actions(self):
-        """
-        Returns list of tuple of (piece_name, piece_coords, position) for all legal actions.
-        """
+        # Area of board that a piece can validly cover. Initially the entire board
+        # Dictionary for player to its valid area, a 14x14 numpy mask of T/F
+        self.valid_area = {
+            1: np.ones((self.BOARD_SIZE, self.BOARD_SIZE), dtype=bool),
+            -1: np.ones((self.BOARD_SIZE, self.BOARD_SIZE), dtype=bool),
+        }
+
+        self.turnnum = 1
+
+    def get_legal_actions(self, dropout_rate=0):
         legal_actions = []
+        positions = self.get_candidate_positions()
         for piece in self.available_pieces[self.player]:
-            for position in self.get_candidate_positions():
-                for coords in self.get_valid_placements(piece, position):
-                    legal_actions.append((piece, coords, position))
+            for position in positions:
+                possible_placements_at_pos = []
+                for action_id in pos_piece_to_id[position][piece]:
+                    if np.random.rand() < dropout_rate:
+                        continue
+                    coords = id_to_coords[action_id]
+                    if np.all(self.valid_area[self.player][coords]):
+                        possible_placements_at_pos.append(action_id)
+                legal_actions += possible_placements_at_pos
         if not legal_actions:
-            legal_actions.append(("pass", None, None))
+            legal_actions.append(0)
         return legal_actions
 
-    def get_valid_placements(self, piece, position):
-        # Assuming position is corner to some piece or starting position
-        # Returns coordinates of possible piece placements on spot, or empty list if no valid placements
-        # player = 1 or 2 for current player trying to place piece.
-        # check if piece can be placed on grid at coord based on blokus rules
-        # position is a tuple for (r, c)
-        possible_placements = []
-        # for piece in self.available_pieces[self.player]:
-        # placement_options = pcco[piece] + position
-        # # Remove any options out of bounds
-        # mask = np.any((placement_options < 0) | (placement_options >= 14), axis=(1, 2))
-        # placement_options = placement_options[~mask]
-
-        # boundary_options = pcb[piece] + position
-        # boundary_options = boundary_options[~mask]
-        # corner_options = pcc[piece] + position
-        # corner_options = corner_options[~mask]
-
-        # for option, boundary, corner in zip(placement_options, boundary_options, corner_options):
-        #     b_mask = np.any((boundary < 0) | (boundary >= 14), axis=1)
-        #     boundary = tuple(boundary[~b_mask].T)
-        #     c_mask = np.any((corner < 0) | (corner >= 14), axis=1)
-        #     corner = tuple(corner[~c_mask].T)
-        # Check space that piece will occupy is empty
-        for option, boundary, corner in pdcpd[position][piece]:
-            if np.all(self.board[boundary] != self.player):
-                if np.all(self.board[tuple(option.T)] == 0):
-                    possible_placements.append(option)
-        return possible_placements
-
     def get_candidate_positions(self):
-        """
-        Finds all valid candidate positions where a player can place a piece.
-        A position is valid if:
-        - It is diagonally adjacent (corner-adjacent) to at least one existing piece of the player.
-        - It is NOT orthogonally adjacent to any existing piece of the player.
-        """
-        candidate_positions = set()
-        player_cells = np.argwhere(self.board == self.player)
-
-        if not len(player_cells):  # If no pieces have been placed yet, return the starting position
+        if self.first_move[self.player]:
             return {self.starting_positions[self.player]}
 
-        for r, c in player_cells:
-            # Check diagonal (corner-adjacent) positions
-            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < self.BOARD_SIZE and 0 <= nc < self.BOARD_SIZE and self.board[nr, nc] == 0:
-                    # Ensure it is NOT orthogonally adjacent to any of the player's own pieces
-                    orthogonally_adjacent = any(
-                        0 <= nr + odr < self.BOARD_SIZE
-                        and 0 <= nc + odc < self.BOARD_SIZE
-                        and self.board[nr + odr, nc + odc] == self.player
-                        for odr, odc in [(0, 1), (1, 0), (0, -1), (-1, 0)]
-                    )
-                    if not orthogonally_adjacent:
-                        candidate_positions.add((nr, nc))
+        # Create a boolean mask of where the player's pieces are
+        player_mask = self.board == self.player
+
+        # Create a mask that is True for cells that are diagonally adjacent
+        diag_candidate = np.zeros_like(self.board, dtype=bool)
+        # Check each diagonal direction by shifting the player's mask.
+        # A candidate cell (i, j) is diagonally adjacent if, for instance, (i-1, j-1) holds a player's piece.
+        diag_candidate[1:, 1:] |= player_mask[:-1, :-1]  # top-left shifted to bottom-right candidate
+        diag_candidate[1:, :-1] |= player_mask[:-1, 1:]  # top-right shifted to bottom-left candidate
+        diag_candidate[:-1, 1:] |= player_mask[1:, :-1]  # bottom-left shifted to top-right candidate
+        diag_candidate[:-1, :-1] |= player_mask[1:, 1:]  # bottom-right shifted to top-left candidate
+
+        # Create a mask for cells that are orthogonally adjacent to a player's piece.
+        ortho_mask = np.zeros_like(self.board, dtype=bool)
+        ortho_mask[1:, :] |= player_mask[:-1, :]  # above neighbor: mark cell below if above is player's piece
+        ortho_mask[:-1, :] |= player_mask[1:, :]  # below neighbor: mark cell above if below is player's piece
+        ortho_mask[:, 1:] |= player_mask[:, :-1]  # left neighbor: mark cell right if left is player's piece
+        ortho_mask[:, :-1] |= player_mask[:, 1:]  # right neighbor: mark cell left if right is player's piece
+
+        candidate_mask = (self.board == 0) & diag_candidate & (~ortho_mask)
+
+        candidate_positions = {tuple(pos) for pos in np.argwhere(candidate_mask)}
 
         return candidate_positions
 
-    def apply_move(self, piece_name, coords, position):
-        if piece_name != "pass":
-            self.board[tuple(coords.T)] = self.player
-            self.available_pieces[self.player].remove(piece_name)
-        self.move_history.append((self.player, piece_name, coords))
+    def apply_move(self, action_id):
+        if action_id != 0:
+            piecename, coords = id_to_piece_coords[action_id]
+            self.board[coords] = self.player
+            self.available_pieces[self.player].remove(piecename)
+            self.passed[self.player] = False
+
+            # Remove from valid area for current player boundary of piece placed
+            piece_boundary = id_to_boundary[action_id]
+            self.valid_area[self.player][piece_boundary] = False
+            self.valid_area[self.player][coords] = False
+            # Remove from valid area for other player the area covered by the piece placed
+            self.valid_area[-self.player][coords] = False
+
+        else:
+            self.passed[self.player] = True
 
         self.first_move[self.player] = False
-        self.player = 3 - self.player  # Switch player
+        self.player *= -1  # Switch player
+        self.turnnum += 1
 
     def game_over(self):
-        if len(self.move_history) >= 2:
-            if self.move_history[-1][1] == "pass" and self.move_history[-2][1] == "pass":
-                return True
-        return False
+        return self.passed[1] and self.passed[-1]
 
     def get_winner(self):
-        if not self.game_over():
-            return 0
-        score1, score2 = self.get_score()
-        if score1 > score2:
-            return 1
-        elif score2 > score1:
-            return 2
+        if self.game_over():
+            score1, score2 = self.get_score()
+            if score1 > score2:
+                return 1
+            elif score2 > score1:
+                return -1
+            else:
+                return 0
         else:
-            return 0
+            raise Exception("Game is not over yet.")
 
     def get_score(self):
         score1 = np.sum(self.board == 1)
-        score2 = np.sum(self.board == 2)
+        score2 = np.sum(self.board == -1)
         return score1, score2
 
     def clone(self):
@@ -136,7 +140,11 @@ class BlokusGame:
         cloned.first_move = self.first_move.copy()
         cloned.starting_positions = self.starting_positions.copy()
         cloned.available_pieces = {p: self.available_pieces[p].copy() for p in self.available_pieces}
-        cloned.move_history = self.move_history[:]
+        cloned.passed = self.passed.copy()
+        cloned.valid_area = {p: self.valid_area[p].copy() for p in self.valid_area}
+        cloned.turnnum = self.turnnum
+        cloned.flipped = self.flipped
+
         return cloned
 
     def encode_board(self):
@@ -146,20 +154,55 @@ class BlokusGame:
         Channels:
           - Channel 0: Binary map of player 1's pieces.
           - Channel 1: Binary map of player 2's pieces.
-          - Channel 2: Board filled with a turn indicator (1.0 if player 1's turn, 0.0 otherwise).
-          - Channel 3: (Optional) Additional features (currently zeros).
-        Output shape: (4, BOARD_SIZE, BOARD_SIZE)
+          - Channel 3+: (Optional) Additional features.
+        Output shape: (?, BOARD_SIZE, BOARD_SIZE)
         """
-        channel1 = (self.board == 1).astype(np.float32)
-        channel2 = (self.board == 2).astype(np.float32)
-        channel3 = np.full((self.BOARD_SIZE, self.BOARD_SIZE), 1.0 if self.player == 1 else 0.0, dtype=np.float32)
-        # TODO: Make channel4 representative of actions left for each player
+        channels = []
+        channels.append((self.board == 1).astype(np.float32))
+        channels.append((self.board == -1).astype(np.float32))
+        # channel3 = (board == 0).astype(np.float32)
+        # channel3 = np.full((self.BOARD_SIZE, self.BOARD_SIZE), 1.0 if self.player == 1 else 0.0, dtype=np.float32)
+        # Channel 4 should be a mask of the valid area for the current player
+        channels.append(self.valid_area[self.player].astype(np.float32))
+        # Channel 5 mask of valid positions
         channel4 = np.zeros((self.BOARD_SIZE, self.BOARD_SIZE), dtype=np.float32)
-        return np.stack([channel1, channel2, channel3, channel4], axis=0)
+        for pos in self.get_candidate_positions():
+            channel4[pos] = 1.0
+        channels.append(channel4)
+        # Channels to encode remaining pieces - iterate through all piece names, and set channel 1 if available, 0 otherwise
+        for piece in piecenames:
+            if piece in self.available_pieces[self.player]:
+                channels.append(np.ones((self.BOARD_SIZE, self.BOARD_SIZE), dtype=np.float32))
+            else:
+                channels.append(np.zeros((self.BOARD_SIZE, self.BOARD_SIZE), dtype=np.float32))
+        for piece in piecenames:
+            if piece in self.available_pieces[-self.player]:
+                channels.append(np.ones((self.BOARD_SIZE, self.BOARD_SIZE), dtype=np.float32))
+            else:
+                channels.append(np.zeros((self.BOARD_SIZE, self.BOARD_SIZE), dtype=np.float32))
+
+        return np.stack(channels, axis=0)
+
+    def flip_action(self, action_id):
+        return reverse_id_perspective[action_id] if self.flipped else action_id
+
+    def flip_perspective(self, player):
+        assert player == self.player
+        self.flipped = not self.flipped if player == -1 else self.flipped
+        self.board *= player
+        self.board = self.board[::player, ::player]
+        self.player *= player
+
+        self.first_move = {1: self.first_move[player], -1: self.first_move[-player]}
+        self.available_pieces = {1: self.available_pieces[player], -1: self.available_pieces[-player]}
+        self.passed = {1: self.passed[player], -1: self.passed[-player]}
+        self.valid_area = {
+            1: self.valid_area[player][::player, ::player],
+            -1: self.valid_area[-player][::player, ::player],
+        }
 
     def __str__(self):
-        # return "\n".join(" ".join(f"{int(cell)}" for cell in row) for row in self.board)
-        board_str = "\n".join(
-            " ".join("X" if cell == 1 else "O" if cell == 2 else "." for cell in row) for row in self.board
+        board_str = f"Player {self.player}'s Turn\n" + "\n".join(
+            " ".join("X" if cell == 1 else "O" if cell == -1 else "." for cell in row) for row in self.board
         )
         return board_str
